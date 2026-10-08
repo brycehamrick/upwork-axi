@@ -1,0 +1,67 @@
+import { runAxiCli } from "axi-sdk-js";
+import { VERSION } from "./version.js";
+import { getCommandContext } from "./context.js";
+import { homeCommand } from "./commands/home.js";
+import { authCommand, AUTH_HELP } from "./commands/auth.js";
+import { browserCommand, BROWSER_HELP } from "./commands/browser.js";
+import { skillCommand, SKILL_HELP } from "./commands/skill.js";
+import { setupCommand, SETUP_HELP } from "./commands/setup.js";
+import { discoverCommand, DISCOVER_HELP } from "./commands/discover.js";
+export const DESCRIPTION = "Upwork for agents - a persistent authenticated browser session over the client (hiring) app, with ref-based interactive primitives and discovery capture";
+const TOP_LEVEL_HELP = `upwork-axi - ${DESCRIPTION}
+
+commands:
+  browser open           start/attach the visible Chrome and snapshot Upwork
+  browser snapshot       page outline with [ref=eN] tags (--full, --query)
+  browser click|fill     act on refs from the snapshot, get a fresh snapshot
+  browser goto|find|select|press|eval|screenshot|console|status|close
+  skill install          install the agent skill (npx-able, idempotent)
+  auth login             open a visible Chrome window, wait for manual login
+  auth status            browser session state (--browser to probe live)
+  auth logout            close the browser, clear the record (--purge deletes the profile)
+  discover               record a manual client-app session (dev command)
+  setup hooks|status     install ambient session context
+
+global flags: --help, -v/--version, update (self-update)
+
+auth: none to configure - the browser transport needs no API key. Login is
+manual through the persistent profile (2FA included). Browser state lives
+in ~/.upwork-axi/ (override with UPWORK_STATE_DIR). Navigation is scoped
+to *.upwork.com; one headed browser at a time.
+
+roadmap: domain commands (jobs list, proposals list/sync, messages
+read/send) are built from discovery artifacts once the session is live.
+The official GraphQL API transport ships separately when API access is
+approved.
+
+run \`upwork-axi <command> --help\` for a command reference.`;
+const COMMAND_HELP = {
+    auth: { help: AUTH_HELP },
+    browser: { help: BROWSER_HELP },
+    skill: { help: SKILL_HELP },
+    setup: { help: SETUP_HELP },
+    discover: { help: DISCOVER_HELP },
+};
+function withContext(command) {
+    return (args) => command(args, getCommandContext());
+}
+export async function main() {
+    await runAxiCli({
+        description: DESCRIPTION,
+        version: VERSION,
+        topLevelHelp: TOP_LEVEL_HELP,
+        getCommandHelp: (command) => COMMAND_HELP[command]?.help ?? null,
+        home: withContext(homeCommand),
+        commands: {
+            auth: withContext(authCommand),
+            browser: withContext(browserCommand),
+            skill: (args) => skillCommand(args),
+            discover: withContext(discoverCommand),
+            setup: (args) => setupCommand(args),
+        },
+    });
+}
+// Direct execution (node dist/index.js) instead of the bin wrapper.
+if (process.argv[1]?.endsWith("index.js")) {
+    await main();
+}

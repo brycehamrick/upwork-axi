@@ -1,0 +1,49 @@
+{
+  "name": "upwork-axi",
+  "version": "0.1.0",
+  "description": "AXI-compliant CLI for Upwork - a persistent authenticated browser session and agent-ergonomic primitives for driving the Upwork client (hiring) interface with Playwright.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Bryce Hamrick",
+  "keywords": [
+    "axi",
+    "upwork",
+    "hiring",
+    "cli",
+    "agent",
+    "playwright",
+    "toon"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brycehamrick/upwork-axi.git"
+  },
+  "bin": {
+    "upwork-axi": "bin/upwork-axi.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "axi-sdk-js": "^0.1.11",
+    "playwright-core": "^1.55.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}

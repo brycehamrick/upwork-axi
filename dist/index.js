@@ -4,6 +4,9 @@ import { getCommandContext } from "./context.js";
 import { homeCommand } from "./commands/home.js";
 import { authCommand, AUTH_HELP } from "./commands/auth.js";
 import { browserCommand, BROWSER_HELP } from "./commands/browser.js";
+import { jobsCommand, JOBS_HELP } from "./commands/jobs.js";
+import { proposalsCommand, proposalGetCommand, PROPOSALS_HELP } from "./commands/proposals.js";
+import { messagesCommand, MESSAGES_HELP } from "./commands/messages.js";
 import { skillCommand, SKILL_HELP } from "./commands/skill.js";
 import { setupCommand, SETUP_HELP } from "./commands/setup.js";
 import { discoverCommand, DISCOVER_HELP } from "./commands/discover.js";
@@ -15,6 +18,11 @@ commands:
   browser snapshot       page outline with [ref=eN] tags (--full, --query)
   browser click|fill     act on refs from the snapshot, get a fresh snapshot
   browser goto|find|select|press|eval|screenshot|console|status|close
+  jobs list              open job postings (ref, title, counts)
+  proposals list|stats   applicant rows / pipeline counts for a job
+  proposal get <id>      one proposal packet (cover letter, terms)
+  messages rooms|read    message rooms / one thread with out-in roles
+  messages unread        unread rooms and counts
   skill install          install the agent skill (npx-able, idempotent)
   auth login             open a visible Chrome window, wait for manual login
   auth status            browser session state (--browser to probe live)
@@ -38,6 +46,10 @@ run \`upwork-axi <command> --help\` for a command reference.`;
 const COMMAND_HELP = {
     auth: { help: AUTH_HELP },
     browser: { help: BROWSER_HELP },
+    jobs: { help: JOBS_HELP },
+    proposals: { help: PROPOSALS_HELP },
+    proposal: { help: PROPOSALS_HELP },
+    messages: { help: MESSAGES_HELP },
     skill: { help: SKILL_HELP },
     setup: { help: SETUP_HELP },
     discover: { help: DISCOVER_HELP },
@@ -55,6 +67,10 @@ export async function main() {
         commands: {
             auth: withContext(authCommand),
             browser: withContext(browserCommand),
+            jobs: withContext(jobsCommand),
+            proposals: withContext(proposalsCommand),
+            proposal: withContext(proposalGetCommand),
+            messages: withContext(messagesCommand),
             skill: (args) => skillCommand(args),
             discover: withContext(discoverCommand),
             setup: (args) => setupCommand(args),

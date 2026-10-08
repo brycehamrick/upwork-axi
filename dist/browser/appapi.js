@@ -3,38 +3,58 @@ import { ensureDaemon, connectDaemon } from "./daemon.js";
 import { classifyUrl } from "./session.js";
 import { CLIENT_URL } from "./runners.js";
 /**
- * In-page GraphQL transport for Upwork's own web-app API, adapted from
- * the manychat-axi appfetch pattern.
+ * In-page transport for Upwork's own web-app APIs, adapted from the
+ * manychat-axi appfetch pattern.
  *
  * The Playwright-controlled browser (already authenticated via the
  * persistent profile) performs the fetches from inside an app page -
  * the browser session stays the only client; cookies are never exported.
  *
- * The web app's GraphQL endpoint is observed from live traffic rather
- * than hardcoded: at connect time we sniff the endpoint URL and the
- * exact headers the app itself sends (reloading the page to trigger its
- * request burst when needed), keep both in memory for the duration of
- * one command, and replay them from in-page fetches. Cookie headers are
- * dropped - the browser re-attaches cookies per CORS policy, exactly
- * like the app's own traffic.
+ * Upwork's web app talks to its GraphQL endpoint
+ * (https://www.upwork.com/api/graphql/v1) and its REST surface
+ * (/api/v3/...) with a family of per-surface scoped OAuth tokens
+ * (authorization: bearer oauth2v2_int_...) minted client-side. Replaying
+ * one surface's token against another operation fails with oauth2 scope
+ * errors, so the capture records headers **per GraphQL alias** (the
+ * `?alias=` the app appends) and **per REST path prefix**, and `gql`/`get`
+ * replay the matching set. When an alias has not been observed yet, a
+ * domain-supplied `surface` URL navigates the page so the app fires (and
+ * we capture) the right token, then the request retries.
+ *
+ * Tokens and headers live in memory for the duration of one command and
+ * are never persisted. Cookie headers are dropped - the browser
+ * re-attaches cookies per CORS policy, exactly like the app's own traffic.
  */
 /**
  * Default endpoint used when traffic has not been observed yet. The
  * capture step replaces it with whatever the app actually calls.
  */
-export const GRAPHQL_URL = "https://www.upwork.com/graphql";
+export const GRAPHQL_URL = "https://www.upwork.com/api/graphql/v1";
+/** The messages app - the surface that mints rooms REST tokens. */
+export const MESSAGES_SURFACE_URL = "https://www.upwork.com/ab/messages/rooms/";
 const UPWORK_HOST = /(^|\.)upwork\.com$/i;
-/** True for GraphQL documents served from an upwork.com host. */
+/** True for GraphQL documents served from an upwork.com host (e.g. /api/graphql/v1). */
 export function isGraphqlUrl(raw) {
     try {
         const url = new URL(raw);
-        return UPWORK_HOST.test(url.hostname) && /\/graphql\/?$/i.test(url.pathname);
+        return UPWORK_HOST.test(url.hostname) && /\/graphql(\/v\d+)?\/?$/i.test(url.pathname);
     }
     catch {
         return false;
     }
 }
-/** Headers that must never be replayed manually (hop-by-hop / forbidden). */
+const ORG_IN_URL = /[?&](?:callerOrgId|orgId)=(\d{6,})/;
+const ORG_IN_BODY = /"teamId"\s*:\s*"(\d{6,})"/;
+/** Extract the org id from an observed request URL or JSON body. */
+export function orgIdFromRequest(url, body) {
+    const fromUrl = ORG_IN_URL.exec(url)?.[1];
+    if (fromUrl)
+        return fromUrl;
+    if (body)
+        return ORG_IN_BODY.exec(body)?.[1];
+    return undefined;
+}
+/** Headers that must never be replayed manually (hop-by-hop / forbidden / tracing). */
 const SKIP_HEADERS = new Set([
     "content-length",
     "host",
@@ -50,6 +70,12 @@ const SKIP_HEADERS = new Set([
     "sec-ch-ua",
     "sec-ch-ua-mobile",
     "sec-ch-ua-platform",
+    "sec-ch-ua-full-version-list",
+    "sec-ch-viewport-width",
+    // per-request tracing ids: replaying stale ones only confuses telemetry
+    "vnd-eo-span-id",
+    "vnd-eo-parent-span-id",
+    "vnd-eo-trace-id",
 ]);
 async function inPageFetch(req) {
     const response = await fetch(req.url, {
@@ -60,34 +86,115 @@ async function inPageFetch(req) {
     });
     return { status: response.status, text: await response.text() };
 }
+async function inPageGet(req) {
+    const response = await fetch(req.url, {
+        method: "GET",
+        credentials: "include",
+        headers: req.headers,
+    });
+    return { status: response.status, text: await response.text() };
+}
+function safePostData(request) {
+    try {
+        return request.postData?.() ?? null;
+    }
+    catch {
+        return null;
+    }
+}
+function replayableHeaders(raw) {
+    const out = {};
+    for (const [name, value] of Object.entries(raw)) {
+        if (!SKIP_HEADERS.has(name.toLowerCase()))
+            out[name] = value;
+    }
+    return out;
+}
+/** REST prefix key: "/api/v3/rooms/rooms/x" -> "/api/v3/rooms". */
+export function restPrefixKey(path) {
+    const segments = path.split("/").filter((segment) => segment.length > 0);
+    return `/${segments.slice(0, 3).join("/")}`;
+}
+function graphqlAlias(url) {
+    try {
+        return new URL(url).searchParams.get("alias") ?? "(none)";
+    }
+    catch {
+        return "(none)";
+    }
+}
+function isAppApiRest(raw) {
+    try {
+        const url = new URL(raw);
+        return UPWORK_HOST.test(url.hostname) && /^\/api\/v\d+\//.test(url.pathname);
+    }
+    catch {
+        return false;
+    }
+}
 /**
- * Capture the GraphQL endpoint URL and auth headers the app itself uses.
- * If nothing is observed within `nudgeMs` and the page is idle on the
- * app, reload it to trigger the SPA's request burst.
+ * Observe the app's own traffic and build the per-surface header map.
+ * Resolves once the `want` target (or, absent one, the first GraphQL
+ * alias) and the org id are both seen - or at the deadline with whatever
+ * was observed.
  */
-export function captureGraphqlHeaders(context, page, opts = {}) {
+export function captureAppContext(context, page, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const nudgeMs = opts.nudgeMs ?? 2_500;
     return new Promise((resolve, reject) => {
         let settled = false;
+        const captured = {
+            endpoint: GRAPHQL_URL,
+            aliases: new Map(),
+            rest: new Map(),
+        };
+        const satisfied = () => captured.orgId !== undefined &&
+            (opts.want
+                ? (opts.want.alias === undefined || captured.aliases.has(opts.want.alias)) &&
+                    (opts.want.restPrefix === undefined || captured.rest.has(opts.want.restPrefix))
+                : captured.aliases.size > 0);
+        const tryFinish = () => {
+            if (satisfied())
+                finish(() => resolve(snapshot(captured)));
+        };
         const handler = (request) => {
             const url = request.url();
-            if (!isGraphqlUrl(url))
+            captured.orgId ??= orgIdFromRequest(url, safePostData(request));
+            if (isGraphqlUrl(url)) {
+                try {
+                    const parsed = new URL(url);
+                    captured.endpoint = `${parsed.origin}${parsed.pathname}`;
+                }
+                catch {
+                    // keep the default endpoint
+                }
+                captured.aliases.set(graphqlAlias(url), replayableHeaders(request.headers()));
+                tryFinish();
                 return;
-            const headers = { ...request.headers() };
-            for (const name of Object.keys(headers)) {
-                if (SKIP_HEADERS.has(name.toLowerCase()))
-                    delete headers[name];
             }
-            finish(() => resolve({ url, headers }));
+            if (isAppApiRest(url)) {
+                try {
+                    const parsed = new URL(url);
+                    captured.rest.set(restPrefixKey(parsed.pathname), replayableHeaders(request.headers()));
+                }
+                catch {
+                    // not a capturable URL
+                }
+                tryFinish();
+            }
         };
-        const failTimer = setTimeout(() => finish(() => reject(new AxiError(`no GraphQL traffic observed within ${timeoutMs}ms - cannot capture auth headers`, "AUTH_ERROR", ["Run `upwork-axi auth login` to refresh the session, then retry"]))), timeoutMs);
+        const failTimer = setTimeout(() => finish(() => {
+            if (captured.aliases.size > 0)
+                resolve(snapshot(captured));
+            else
+                reject(new AxiError(`no GraphQL traffic observed within ${timeoutMs}ms - cannot capture auth headers`, "AUTH_ERROR", ["Run `upwork-axi auth login` to refresh the session, then retry"]));
+        }), timeoutMs);
         const nudgeTimer = setTimeout(() => {
             if (settled)
                 return;
-            // Reload the idle dashboard to trigger its GraphQL burst. A stale tab
-            // can still show an app URL after the session died - the reload
-            // is where a logout actually reveals itself, so fail fast there.
+            // Reload the idle page to trigger its request burst. A stale tab can
+            // still show an app URL after the session died - the reload is where
+            // a logout actually reveals itself, so fail fast there.
             void page
                 .reload({ waitUntil: "domcontentloaded" })
                 .then(() => page.waitForTimeout(1500))
@@ -112,61 +219,128 @@ export function captureGraphqlHeaders(context, page, opts = {}) {
         context.on("request", handler);
     });
 }
+function snapshot(captured) {
+    return {
+        endpoint: captured.endpoint,
+        aliases: new Map(captured.aliases),
+        rest: new Map(captured.rest),
+        orgId: captured.orgId,
+    };
+}
+function mergeInto(target, update) {
+    target.endpoint = update.endpoint;
+    for (const [key, value] of update.aliases)
+        target.aliases.set(key, value);
+    for (const [key, value] of update.rest)
+        target.rest.set(key, value);
+    target.orgId ??= update.orgId;
+}
 function snippet(text) {
     const flat = text.replace(/\s+/g, " ").trim();
     return flat.length <= 200 ? flat : `${flat.slice(0, 200)}…`;
 }
-function makeApi(page, endpoint, headers) {
+function makeApi(page, context, captured, recapture) {
     const CONTEXT_DESTROYED = /Execution context|Target closed|navigation|crashed/i;
+    const run = async (fn, retry = true) => {
+        try {
+            return await fn();
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!retry || !CONTEXT_DESTROYED.test(message))
+                throw error;
+            // The SPA re-rendered mid-request - let it settle and retry once.
+            await page.waitForTimeout(1200);
+            return run(fn, false);
+        }
+    };
+    const surfaceUrl = (surface) => typeof surface === "function" ? surface() : surface;
+    const aliasError = (alias) => new AxiError(`the app never sent a request with alias "${alias}" - no captured token for it`, "APP_API_ERROR", [
+        `Captured aliases: ${[...captured.aliases.keys()].join(", ") || "(none)"}`,
+        "Pass a surface URL that triggers this operation, or re-run discover to map it",
+    ]);
     return {
-        async gql(query, variables) {
-            let response;
-            const attempt = async () => page.evaluate(inPageFetch, {
-                url: endpoint,
+        orgId() {
+            if (captured.orgId === undefined) {
+                throw new AxiError("the client organization id was not observed in app traffic", "APP_API_ERROR", ["Open the Upwork dashboard in the browser once (`upwork-axi browser open`), then retry"]);
+            }
+            return captured.orgId;
+        },
+        async gql(query, variables, opts = {}) {
+            const alias = opts.alias ?? "(none)";
+            let headers = captured.aliases.get(alias);
+            if (headers === undefined) {
+                const surface = surfaceUrl(opts.surface);
+                if (surface !== undefined) {
+                    await recapture(surface, { alias });
+                    headers = captured.aliases.get(alias);
+                }
+                if (headers === undefined)
+                    throw aliasError(alias);
+            }
+            const url = alias === "(none)" ? captured.endpoint : `${captured.endpoint}?alias=${alias}`;
+            const response = await run(() => page.evaluate(inPageFetch, { url, headers, body: JSON.stringify({ query, variables }) }));
+            return checkGraphql(response, "GraphQL");
+        },
+        async get(path, params, opts = {}) {
+            const key = restPrefixKey(path);
+            let headers = captured.rest.get(key);
+            if (headers === undefined) {
+                const surface = surfaceUrl(opts.surface);
+                if (surface !== undefined) {
+                    await recapture(surface, { restPrefix: key });
+                    headers = captured.rest.get(key);
+                }
+                if (headers === undefined) {
+                    throw new AxiError(`no captured token for REST prefix ${key}`, "APP_API_ERROR", [`Captured prefixes: ${[...captured.rest.keys()].join(", ") || "(none)"}`]);
+                }
+            }
+            const query = params
+                ? `?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString()}`
+                : "";
+            const response = await run(() => page.evaluate(inPageGet, {
+                url: `${path}${query}`,
                 headers,
-                body: JSON.stringify({ query, variables }),
-            });
-            try {
-                try {
-                    response = await attempt();
-                }
-                catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    if (!CONTEXT_DESTROYED.test(message))
-                        throw error;
-                    // The dashboard SPA re-rendered mid-request - let it settle and retry once.
-                    await page.waitForTimeout(1200);
-                    response = await attempt();
-                }
-            }
-            catch (error) {
-                throw new AxiError(`GraphQL request failed before the server responded: ${error instanceof Error ? error.message : String(error)}`, "APP_API_ERROR", ["The browser session may have closed; rerun the command"]);
-            }
+            }));
             if (response.status === 401 || response.status === 403) {
-                throw new AxiError(`Upwork rejected the session (HTTP ${response.status})`, "AUTH_ERROR", ["Run `upwork-axi auth login` to refresh the browser session"]);
+                throw new AxiError(`Upwork rejected the session (HTTP ${response.status} on ${path})`, "AUTH_ERROR", ["Run `upwork-axi auth login` to refresh the browser session"]);
             }
             if (response.status !== 200) {
-                throw new AxiError(`GraphQL HTTP ${response.status}: ${snippet(response.text)}`, "APP_API_ERROR", ["Retry; if it persists, the internal API shape may have changed (re-run discover)"]);
+                throw new AxiError(`REST HTTP ${response.status} on ${path}: ${snippet(response.text)}`, "APP_API_ERROR", ["Retry; if it persists, the internal API shape may have changed (re-run discover)"]);
             }
-            let parsed;
             try {
-                parsed = JSON.parse(response.text);
+                return JSON.parse(response.text);
             }
             catch {
-                throw new AxiError(`GraphQL returned non-JSON: ${snippet(response.text)}`, "APP_API_ERROR");
+                throw new AxiError(`REST returned non-JSON on ${path}: ${snippet(response.text)}`, "APP_API_ERROR");
             }
-            const firstError = parsed.errors?.[0]?.message;
-            if (firstError !== undefined) {
-                throw new AxiError(`GraphQL error: ${snippet(firstError)}`, "APP_API_ERROR", [
-                    "The query may have drifted from the live schema - re-run discover and re-extract",
-                ]);
-            }
-            if (typeof parsed.data !== "object" || parsed.data === null) {
-                throw new AxiError("GraphQL returned no data payload", "APP_API_ERROR");
-            }
-            return parsed.data;
         },
     };
+    function checkGraphql(response, label) {
+        if (response.status === 401 || response.status === 403) {
+            throw new AxiError(`Upwork rejected the session (HTTP ${response.status})`, "AUTH_ERROR", ["Run `upwork-axi auth login` to refresh the browser session"]);
+        }
+        if (response.status !== 200) {
+            throw new AxiError(`${label} HTTP ${response.status}: ${snippet(response.text)}`, "APP_API_ERROR", ["Retry; if it persists, the internal API shape may have changed (re-run discover)"]);
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(response.text);
+        }
+        catch {
+            throw new AxiError(`${label} returned non-JSON: ${snippet(response.text)}`, "APP_API_ERROR");
+        }
+        const firstError = parsed.errors?.[0]?.message;
+        if (firstError !== undefined) {
+            throw new AxiError(`GraphQL error: ${snippet(firstError)}`, "APP_API_ERROR", [
+                "The query may have drifted from the live schema - re-run discover and re-extract",
+            ]);
+        }
+        if (typeof parsed.data !== "object" || parsed.data === null) {
+            throw new AxiError("GraphQL returned no data payload", "APP_API_ERROR");
+        }
+        return parsed.data;
+    }
 }
 /** An authenticated app page is a valid surface for in-page fetches. */
 function isAppPageUrl(raw) {
@@ -183,9 +357,9 @@ async function settleForRedirect(page) {
     return page.url();
 }
 /**
- * Ensure the daemon, land on the app, capture the GraphQL endpoint and
- * auth headers from live traffic, run `fn` with an AppApi, then
- * disconnect. Both live only in memory for the duration of the call.
+ * Ensure the daemon, land on the app, capture the per-surface token map
+ * from live traffic, run `fn` with an AppApi, then disconnect. Tokens
+ * live only in memory for the duration of the call.
  */
 export async function withAppApi(stateDir, deps, fn) {
     await ensureDaemon(stateDir, deps);
@@ -203,20 +377,53 @@ export async function withAppApi(stateDir, deps, fn) {
             }
         }
         const context = conn.context;
-        const captured = await captureGraphqlHeaders(context, conn.page);
-        // Let the SPA settle after whatever navigation produced the captured
-        // request (reloads destroy execution contexts mid-evaluate otherwise).
-        await conn.page
-            .waitForLoadState("networkidle", { timeout: 8_000 })
-            .catch(() => undefined);
+        const captured = await captureAppContext(context, conn.page);
+        if (captured.orgId === undefined) {
+            // The current surface never mentioned the org id - the dashboard
+            // burst always carries it (relations + rooms traffic).
+            await conn.page
+                .goto(CLIENT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 })
+                .catch(() => undefined);
+            const update = captureAppContext(context, conn.page, { timeoutMs: 15_000 });
+            mergeInto(captured, await update);
+            await conn.page.waitForTimeout(500);
+        }
+        const recapture = async (surfaceUrl, want) => {
+            // Attach the listener first so the navigation burst is observed in
+            // full; the nudge-reload cache-busts when the SPA skips refetching.
+            const update = captureAppContext(context, conn.page, {
+                timeoutMs: 18_000,
+                nudgeMs: 6_000,
+                ...(want ? { want } : {}),
+            });
+            const target = surfaceUrl ?? conn.page.url();
+            if (isAppPageUrl(target)) {
+                await conn.page.goto(target, { waitUntil: "domcontentloaded", timeout: 60_000 });
+            }
+            mergeInto(captured, await update);
+            // Let the SPA settle so evaluate() runs against a stable context.
+            await conn.page.waitForTimeout(500);
+        };
         await conn.page.waitForTimeout(500);
-        return await fn(makeApi(conn.page, captured.url, captured.headers));
+        return await fn(makeApi(conn.page, context, captured, recapture));
     }
     finally {
         await conn.disconnect();
     }
 }
 /** Test seam: build an AppApi over a fake page with canned fetch results. */
-export function appApiForTest(page, headers = {}) {
-    return makeApi(page, GRAPHQL_URL, headers);
+export function appApiForTest(page, headers = {}, org = "678320150802239488") {
+    const aliases = [
+        "(none)",
+        "clientProposalsByFilter",
+        "gql-query-clientdashboardrelations",
+        "proposalsStatistics",
+    ];
+    const captured = {
+        endpoint: GRAPHQL_URL,
+        aliases: new Map(aliases.map((alias) => [alias, headers])),
+        rest: new Map([["/api/v3/rooms", { ...headers, accept: "application/json" }]]),
+        orgId: org,
+    };
+    return makeApi(page, { on: () => undefined, off: () => undefined }, captured, async () => undefined);
 }

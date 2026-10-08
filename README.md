@@ -8,9 +8,8 @@ browser an agent can actually drive.
 This is the **browser transport** for Upwork hiring: a visible Chrome on a
 dedicated persistent profile (manual login, 2FA included) that stays alive
 between commands, ref-based interactive primitives modeled on
-`playwright-axi`, and a `discover` command that records the client app's
-own JSON traffic for building domain commands (jobs, proposals, messages)
-next.
+`playwright-axi`, and domain commands (jobs, proposals, messages) that
+replay the web app's own per-surface scoped tokens from inside the page.
 
 Upwork also exposes an official GraphQL API for clients; a sanctioned
 API-key transport is planned alongside this one (API access pending
@@ -22,7 +21,7 @@ through the visible browser session.
 ```sh
 npm install -g upwork-axi
 # or run on demand, identical:
-npx -y upwork-axi@latest browser open
+npx -y upwork-axi@latest jobs list
 # install the agent skill for coding agents (Claude Code, Codex, OpenCode, ...):
 npx -y upwork-axi skill install
 ```
@@ -43,13 +42,20 @@ upwork-axi auth status --browser
 
 The session lives in a dedicated persistent profile under `~/.upwork-axi/`
 (`UPWORK_STATE_DIR` overrides) - never your primary Chrome profile. The
-browser stays open after login so `browser` commands work immediately.
+browser stays open after login so commands work immediately.
 
 ## Commands
 
 | Command | Description |
 | --- | --- |
 | `upwork-axi` | Home: session record, daemon state, next steps (zero launches) |
+| `upwork-axi jobs list` | Open job postings (ref, title, proposal counts) |
+| `upwork-axi proposals list --job <ref>` | Applicant rows (`--status`, `--limit`, `--cursor`) |
+| `upwork-axi proposals stats --job <ref>` | Pipeline counts (messaged/hired/shortlisted/...) |
+| `upwork-axi proposal get <id>` | One proposal packet: cover letter, Q&A, milestones, files (`--full`) |
+| `upwork-axi messages rooms` | Message rooms (`--unread`, `--limit`) |
+| `upwork-axi messages read <room>` | One thread, out/in roles (`--full`, `--limit`) |
+| `upwork-axi messages unread` | Unread rooms and counts |
 | `upwork-axi auth login` | Open visible Chrome, wait for manual login |
 | `upwork-axi auth status` | Session state (`--browser` probes live) |
 | `upwork-axi auth logout` | Close the browser, clear the record (`--purge` deletes the profile) |
@@ -70,10 +76,48 @@ browser stays open after login so `browser` commands work immediately.
 
 Every command supports `--json` and `--help`.
 
-## The interactive loop (screening candidates today)
+## Domain reads (the web app's own tokens, replayed in-page)
 
-Domain commands land after the first discovery run; the interactive loop
-already covers the hiring workflow:
+Domain commands run over the same authenticated browser. Upwork's web app
+authenticates its APIs with a family of **per-surface scoped OAuth tokens**
+minted client-side - so at connect time the CLI sniffs the endpoint, the
+org id, and the exact headers the app itself sends per operation family
+(`?alias=` for GraphQL, path prefix for REST), keeps them in memory for
+one command, and replays them from in-page fetches. When an operation's
+token has not been observed yet, the CLI navigates the visible window to
+the surface that mints it (dashboard, the job's applicants page, or
+messages), captures, and proceeds. Cookies never leave the browser; tokens
+are never persisted.
+
+```sh
+$ upwork-axi jobs list
+jobs:
+  count: 1
+totals:
+  OPEN_OPENINGS: 1
+  ACTIVE_CONTRACTS: 6
+list[1]{ref,title,proposals,unread,shortlisted,hired}:
+  "2103617170216336029","Experienced Event Photo Editor - ...",17,13,0,1
+
+$ upwork-axi proposals list --job "photo editor"
+proposals:
+  total: 17
+  shown: 17
+list[17]{id,name,title,rate,status,jss,hours}:
+  "2103915344041877505",Ozz P.,"Photographer, Photo retouching, ...",27.0 USD,Created,0,0
+  ...
+
+$ upwork-axi messages read "Ghaith" --limit 4
+messages:
+  count: 4
+list[4]{role,at,body}:
+  in,"2026-10-08T18:19:29.193Z","Hello Bryce Great, I'll get to retouching them..."
+  out,"2026-10-08T18:09:23.374Z","Yes these are better thanks."
+  ...
+```
+
+The full endpoint map (operations, aliases, surfaces, REST shapes) lives
+in `docs/discovery-2026-10-08.md`.
 
 ```sh
 $ upwork-axi browser open
@@ -133,13 +177,15 @@ domain-command roadmap (`jobs`, `proposals`, `messages`).
 
 ## Roadmap
 
-- **Phase 0 (this release)** - scaffold, persistent browser daemon, auth,
-  interactive `browser` family, `discover`, skill, hooks.
-- **Phase 1** - domain reads over in-page GraphQL: `jobs list`,
-  `proposals list/sync`, `proposal get`, `messages read`, local proposal
-  store. Queries extracted from discovery artifacts.
-- **Phase 2** - gated writes: `messages send --confirm` (verified by thread
-  re-read), proposal shortlist/archive/decline.
+- **Phase 0** - scaffold, persistent browser daemon, auth, interactive
+  `browser` family, `discover`, skill, hooks.
+- **Phase 1 (this release)** - domain reads replaying the web app's own
+  scoped tokens: `jobs list`, `proposals list/stats`, `proposal get`,
+  `messages rooms/read/unread`. Endpoint map:
+  `docs/discovery-2026-10-08.md`.
+- **Phase 2** - gated writes: `messages send --confirm` (verified by
+  thread re-read; needs one user-approved test send to capture the
+  mutation), proposal shortlist/archive/decline.
 - **API transport** - the official Upwork GraphQL API (OAuth 2.0) becomes
   the primary transport once API access is approved; the browser family
   stays as fallback for API gaps.

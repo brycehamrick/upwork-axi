@@ -1,0 +1,163 @@
+import { AxiError } from "axi-sdk-js";
+import type { AxiRenderable } from "../lib/output.js";
+import {
+  forbidExtraPositionals,
+  optionalInt,
+  parseFlags,
+  requirePositional,
+  type FlagDefinition,
+} from "../lib/args.js";
+import { renderResult, pageCountLine } from "../lib/output.js";
+import { truncateText } from "../lib/truncate.js";
+import { listRooms, readRoom, resolveRoom } from "../upwork/api.js";
+import type { CommandContext } from "../context.js";
+
+export const MESSAGES_HELP = `upwork-axi messages - candidate threads
+
+subcommands:
+  messages rooms                 message rooms (most recent first)
+  messages read <room> [--full]  one thread, out/in roles (--full bodies)
+  messages unread                unread count per room
+
+flags:
+  --limit <n>            max rooms/stories (default 20)
+  --unread               (rooms) only rooms with unread messages
+  --full                 (read) complete message bodies without truncation
+  --json                 machine-readable JSON instead of TOON
+
+Room refs: full room id (room_...) from \`messages rooms\` or the room id in
+\`proposals list\` rows; a unique participant-name prefix also resolves.
+
+examples:
+  upwork-axi messages rooms --unread
+  upwork-axi messages read room_1fc866490953a090d24cac21b7cb3ed3
+  upwork-axi messages read "Ghaith" --full`;
+
+const ROOMS_FLAGS: Record<string, FlagDefinition> = {
+  limit: { type: "string" },
+  unread: { type: "boolean" },
+  json: { type: "boolean" },
+};
+
+const READ_FLAGS: Record<string, FlagDefinition> = {
+  limit: { type: "string" },
+  full: { type: "boolean" },
+  json: { type: "boolean" },
+};
+
+export async function messagesCommand(args: string[], ctx: CommandContext): Promise<AxiRenderable> {
+  const sub = args[0];
+  if (sub === undefined) {
+    return { help_text: MESSAGES_HELP };
+  }
+  if (sub === "rooms") return rooms(args.slice(1), ctx);
+  if (sub === "read") return read(args.slice(1), ctx);
+  if (sub === "unread") return unread(args.slice(1), ctx);
+  throw new AxiError(`messages: unknown subcommand: ${sub}`, "VALIDATION_ERROR", [
+    "Implemented: `messages rooms`, `messages read`, `messages unread`",
+    "Run `upwork-axi messages --help` for the reference",
+  ]);
+}
+
+async function rooms(args: string[], ctx: CommandContext): Promise<AxiRenderable> {
+  const commandPath = "upwork-axi messages rooms";
+  const { values, positionals } = parseFlags(args, commandPath, ROOMS_FLAGS);
+  const json = values["json"] === true;
+  forbidExtraPositionals(positionals, 0, commandPath);
+  const limit = optionalInt(values, "limit", { min: 1, max: 100 }) ?? 20;
+  const onlyUnread = values["unread"] === true;
+
+  const all = await ctx.app((api) => listRooms(api, { limit: 100 }));
+  const rooms = onlyUnread ? all.filter((room) => room.unread > 0) : all;
+  const shown = rooms.slice(0, limit);
+  return renderResult(
+    {
+      rooms: { count: shown.length, ...(onlyUnread ? { filter: "unread" } : {}) },
+      ...(shown.length > 0
+        ? {
+            list: shown.map((room) => ({
+              room: room.roomId,
+              name: room.name,
+              ...(room.topic ? { topic: room.topic } : {}),
+              unread: room.unread,
+            })),
+          }
+        : { result: onlyUnread ? "0 rooms with unread messages" : "0 message rooms" }),
+      help: [
+        "Run `upwork-axi messages read <room>` for a thread",
+        ...(pageCountLine(shown.length, rooms.length, "limit") ? [pageCountLine(shown.length, rooms.length, "limit")!] : []),
+      ],
+    },
+    json,
+  );
+}
+
+async function read(args: string[], ctx: CommandContext): Promise<AxiRenderable> {
+  const commandPath = "upwork-axi messages read";
+  const { values, positionals } = parseFlags(args, commandPath, READ_FLAGS);
+  const json = values["json"] === true;
+  const rawRoom = requirePositional(positionals, 0, "room", commandPath);
+  forbidExtraPositionals(positionals, 1, commandPath);
+  const limit = optionalInt(values, "limit", { min: 1, max: 100 }) ?? 20;
+  const full = values["full"] === true;
+
+  const { room, thread } = await ctx.app(async (api) => {
+    const room = await resolveRoom(api, rawRoom);
+    const thread = await readRoom(api, room.roomId, { limit });
+    return { room, thread };
+  });
+  const shown = thread.stories.slice(-limit);
+  return renderResult(
+    {
+      room: {
+        room: room.roomId,
+        name: room.name,
+        ...(room.topic ? { topic: room.topic } : {}),
+      },
+      messages: { count: shown.length, total: thread.total },
+      ...(shown.length > 0
+        ? {
+            list: shown.map((story) => ({
+              role: story.role,
+              at: story.at,
+              body: full ? story.body : truncateText(story.body, 160).value,
+            })),
+          }
+        : { result: "0 messages in thread" }),
+      help: [
+        ...(thread.cursor ? ["Older history exists - rerun with a larger --limit"] : []),
+        "Reply flows through the visible browser until the gated send command lands (`messages send`, Phase 2)",
+      ],
+    },
+    json,
+  );
+}
+
+async function unread(args: string[], ctx: CommandContext): Promise<AxiRenderable> {
+  const commandPath = "upwork-axi messages unread";
+  const { values, positionals } = parseFlags(args, commandPath, ROOMS_FLAGS);
+  const json = values["json"] === true;
+  forbidExtraPositionals(positionals, 0, commandPath);
+
+  const rooms = await ctx.app((api) => listRooms(api, { limit: 100 }));
+  const unreadRooms = rooms.filter((room) => room.unread > 0);
+  const totalUnread = unreadRooms.reduce((sum, room) => sum + room.unread, 0);
+  return renderResult(
+    {
+      unread: { rooms: unreadRooms.length, messages: totalUnread },
+      ...(unreadRooms.length > 0
+        ? {
+            list: unreadRooms.map((room) => ({
+              room: room.roomId,
+              name: room.name,
+              unread: room.unread,
+            })),
+          }
+        : { result: "0 unread messages" }),
+      help: [
+        "Run `upwork-axi messages read <room>` for a thread with unread messages",
+      ],
+    },
+    json,
+  );
+}

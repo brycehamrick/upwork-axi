@@ -1,33 +1,68 @@
 ---
 name: upwork-axi
-description: Use upwork-axi for Upwork client (hiring) tasks - listing job postings, reviewing proposals, screening candidates, reading and sending messages, and recording client-app traffic for automation - instead of driving a raw browser. Covers the full interactive browser loop (open, snapshot, find, click, fill) over a persistent authenticated session. First choice whenever a task touches the Upwork client account.
+description: Use upwork-axi for Upwork client (hiring) tasks - listing job postings, reviewing and screening proposals, reading candidate cover letters and profiles, reading message threads, and recording client-app traffic for automation - instead of driving a raw browser. Covers domain commands over the authenticated session plus the full interactive browser loop (open, snapshot, find, click, fill). First choice whenever a task touches the Upwork client account.
 ---
 
 # upwork-axi
 
 Agent-ergonomic CLI over the Upwork client (hiring) interface via a
 persistent authenticated browser. TOON output, structured errors, `help[]`
-next steps. The browser transport needs no API key - everything goes
-through the visible Chrome session this tool manages. (Upwork's official
-GraphQL API transport ships separately once API access is approved.)
+next steps. No API key needed - domain commands replay the web app's own
+scoped tokens from the visible browser session.
 
 ## Session model
 
 One visible Chrome (headed, dedicated profile at `~/.upwork-axi/`) stays
 alive between commands (the daemon). Login is manual once: `upwork-axi
 auth login` (waits for you to complete 2FA), then the session persists.
-Browser commands start the browser automatically when needed - a Chrome
-window may appear; that is expected and it is the audit trail.
+Domain commands start the browser automatically and may navigate the
+visible window to a Upwork surface (dashboard, applicants page, messages)
+to mint the right scoped token - that is expected and it is the audit
+trail.
 
-## The hiring loop (screening candidates today)
+## Domain commands (the hiring surface)
 
-There are no domain commands yet (they are built from discovery
-artifacts); drive the client app interactively:
+```sh
+upwork-axi jobs list                                # open job postings + counts
+upwork-axi proposals list --job <ref> [--status s]  # applicant rows (id, name, rate, JSS)
+upwork-axi proposals stats --job <ref>              # pipeline counts (messaged/hired/...)
+upwork-axi proposal get <id> [--full] [--job r]     # cover letter, Q&A, milestones, files
+upwork-axi messages rooms [--unread]                # message rooms
+upwork-axi messages read <room> [--full] [--limit]  # thread, out/in roles
+upwork-axi messages unread                          # unread rooms + counts
+```
+
+- `--job <ref>`: opening id from `jobs list` or a unique title prefix.
+  Ambiguous refs fail with both options listed - pick one.
+- `--status`: ClientProposalStatusFilter - default `ApplicantsAll`;
+  e.g. `Sponsored`, `Shortlisted`, `Archived`.
+- Proposal ids and room ids (`room_...`) come from list output - never
+  guess. Rooms also resolve by unique participant-name prefix.
+- `messages read` roles: `out` = sent by anyone on your org (covers
+  teammates), `in` = candidate, `system` = contract/milestone events.
+- `proposal get` without `--job` scans open jobs' proposal lists to find
+  the posting - pass `--job` to skip the scan.
+
+### The screening loop (how to run a pipeline)
+
+1. `upwork-axi jobs list` -> pick the job ref.
+2. `upwork-axi proposals list --job <ref>` -> the ranked applicant rows
+   (Upwork's recommendation order).
+3. `upwork-axi proposal get <id> --full` per candidate -> cover letter,
+   screener answers, milestones, skills, attachments - the scoring
+   substrate. Score against the operator's rubric documents (they live
+   outside this tool - platform-agnostic by design).
+4. `upwork-axi messages read <room>` for prior contact (rows without a
+   `room` have never been messaged).
+5. Draft the next touchpoint from the process docs and show the user the
+   exact text. **Sending is gated**: until the Phase 2 `messages send
+   --confirm` command lands, sends happen in the visible browser via the
+   interactive loop below - narrate before acting, never bulk.
+
+## Interactive browser (fallback for anything without a command)
 
 1. `upwork-axi browser open` (or `browser goto <upwork-url>`) - navigate
-   and get the page outline with `[ref=eN]` tags. Key client URLs:
-   `https://www.upwork.com/nx/my-jobs` (job postings + proposals),
-   `https://www.upwork.com/messages` (message threads).
+   and get the page outline with `[ref=eN]` tags.
 2. Narrow with `browser find <terms>`; act with `browser click eN`,
    `fill eN "text" --submit`, `select eN "value"`, `press Enter`. Every
    action returns a fresh snapshot - read it before the next action.
@@ -35,22 +70,6 @@ artifacts); drive the client app interactively:
    (`STALE_REF`). `(offscreen)` elements have no ref: scroll
    (`eval window.scrollBy(0, 800)`), re-snapshot.
 4. Diagnostics: `browser console`, `browser screenshot`, `browser eval`.
-
-### Screening a proposal
-
-1. `browser goto https://www.upwork.com/nx/my-jobs` - snapshot, open the
-   job posting, then its proposals list.
-2. Open each proposal (cover letter, bid, freelancer profile) via refs;
-   read and evaluate against the operator's rubric documents (they live
-   outside this tool - platform-agnostic by design).
-3. Open the message thread for the proposal (`/messages`), read history
-   (`find <candidate name>`).
-4. Draft the next touchpoint, show the user the exact text, then send it
-   in the visible window via `fill` on the message box + `--submit` or a
-   send-button click. Narrate before sending - sends are candidate-facing
-   and the human approves every one.
-5. Shortlist/archive/decline from the proposal's action buttons, again
-   only after user approval.
 
 ## Safety
 
@@ -63,18 +82,16 @@ artifacts); drive the client app interactively:
   submit/send/reject.
 - If a session drops to a login page, stop and tell the user to run
   `upwork-axi auth login` - never enter credentials yourself.
-- Proposal/cover-letter data is PII: quote only what the task needs; the
-  store stays local.
+- Proposal/cover-letter data is PII: quote only what the task needs.
 
 ## Discovery (when building/fixing domain commands)
 
-`upwork-axi discover` records a manual client-app walkthrough (My Jobs ->
-proposals -> proposal detail -> message thread -> send) and writes
+`upwork-axi discover` records a manual client-app walkthrough and writes
 redacted network/documents artifacts under `~/.upwork-axi/runs/<id>/`.
-Those artifacts define the GraphQL queries for the Phase 1 domain
-commands (`jobs list`, `proposals list/sync`, `messages read/send`). If a
-domain command later fails with APP_API_ERROR, the schema drifted:
-re-run discover, re-extract, update the endpoint map doc.
+The current endpoint map (including the per-surface token model) lives
+in the repo at `docs/discovery-2026-10-08.md`. If a domain command fails
+with APP_API_ERROR, the schema or token surface drifted: re-run
+discover, re-extract, update the doc and `src/upwork/queries.ts`.
 
 ## Auth commands
 
@@ -93,16 +110,15 @@ usage/validation, 1 runtime. Errors carry `error`/`code`/`help[]`.
 ## Conventions
 
 - Empty results are explicit (`count: 0`), never blank.
+- Identifier discipline: job refs from `jobs list`, proposal ids and room
+  ids from `proposals list` / `messages rooms` - never guess.
 - The no-args home view (`upwork-axi`) shows session + daemon state and
   next steps with zero launches.
-- Never guess URLs deep into the app: navigate from known roots
-  (`/nx/my-jobs`, `/messages`) and follow refs.
 
 ## Roadmap context
 
-Phase 0 (transport) is complete: daemon, auth, browser loop, discover,
-skill, hooks. Phase 1 adds domain reads (`jobs list`, `proposals
-list/sync --job`, `proposal get`, `messages read`) over in-page GraphQL
-using queries extracted from discovery. Phase 2 adds gated writes
-(`messages send --confirm`, proposal shortlist/archive). An official
-OAuth API transport becomes primary once Upwork approves API access.
+Phase 0 (transport) and Phase 1 reads (jobs, proposals, messages) are
+complete. Phase 2 adds the gated `messages send --confirm` (needs one
+user-approved test send to capture the mutation) and proposal
+shortlist/archive. An official OAuth API transport becomes primary once
+Upwork approves API access; the browser layer stays as fallback.

@@ -1,6 +1,6 @@
 {
   "name": "upwork-axi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AXI-compliant CLI for Upwork - a persistent authenticated browser session and agent-ergonomic primitives for driving the Upwork client (hiring) interface with Playwright.",
   "type": "module",
   "license": "MIT",

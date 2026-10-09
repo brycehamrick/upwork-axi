@@ -235,6 +235,23 @@ export function formatTimestamp(ms: number): string {
   return ms > 0 ? new Date(ms).toISOString() : "";
 }
 
+/** The client-side user of a room from GET /api/v3/rooms/rooms/<id>/users. */
+export function meFromRoomUsers(payload: unknown, orgId: string): string | undefined {
+  const users = Array.isArray(asRaw(payload)?.["users"])
+    ? ((asRaw(payload) as Raw)["users"] as unknown[])
+    : [];
+  for (const user of users) {
+    const entry = asRaw(user);
+    if (entry && strOf(entry["orgId"]) === orgId) return strOf(entry["userId"]);
+  }
+  return undefined;
+}
+
+/** The client-generated messageId for a story send: <userId>-<epoch>-<rand4>. */
+export function buildMessageId(userId: string, nowMs: number, rand: number): string {
+  return `${userId}-${nowMs}-${rand}`;
+}
+
 /* ------------------------------------------------------------------ */
 /* Proposal packets (from the list query's rich nodes)                 */
 /* ------------------------------------------------------------------ */

@@ -8,6 +8,8 @@ import {
 } from "./queries.js";
 import {
   jobRowsFromRelations,
+  meFromRoomUsers,
+  buildMessageId,
   packetFromListNode,
   proposalRowsFromFilter,
   statsFromStatistics,
@@ -243,4 +245,67 @@ export async function resolveRoom(api: AppApi, raw: string): Promise<RoomRow> {
     ]);
   }
   return matches[0]!;
+}
+
+export interface SendResult {
+  storyId: string;
+  created: string;
+  messageId: string;
+}
+
+/**
+ * Send one message to a room (the write the app itself performs:
+ * POST /api/v3/rooms/rooms/<roomId>/stories with a client-generated
+ * messageId; extracted verbatim from discovery run
+ * discover-20261009-083451-70c1). One send per invocation - never bulk.
+ */
+export async function sendRoomMessage(
+  api: AppApi,
+  roomId: string,
+  text: string,
+  opts: { now?: () => number } = {},
+): Promise<SendResult> {
+  const orgId = api.orgId();
+  const usersPayload = await api.get(
+    `/api/v3/rooms/rooms/${roomId}/users`,
+    { limit: 100, callerOrgId: orgId },
+    { surface: MESSAGES_SURFACE_URL },
+  );
+  const me = meFromRoomUsers(usersPayload, orgId);
+  if (me === undefined) {
+    throw new AxiError(`could not identify the client user in room ${roomId}`, "APP_API_ERROR", [
+      "Retry; if it persists, re-run `upwork-axi auth login` to refresh the session",
+    ]);
+  }
+  const now = opts.now ?? Date.now;
+  const messageId = buildMessageId(me, now(), 1000 + Math.floor(Math.random() * 9000));
+  const story = asRaw(
+    await api.post(
+      `/api/v3/rooms/rooms/${roomId}/stories`,
+      {
+        messageId,
+        roomId,
+        userId: me,
+        deleted: false,
+        markedAsAbusive: 0,
+        message: text,
+        sourceClient: "thunder-web",
+        actionType: "eo:post",
+        orgId,
+        notes: {},
+        objectReferences: [{ objectType: "eo:message", metadata: {} }],
+        isLocked: false,
+      },
+      { callerOrgId: orgId },
+      { surface: MESSAGES_SURFACE_URL },
+    ),
+  );
+  const storyId = typeof story?.["storyId"] === "string" ? (story["storyId"] as string) : "";
+  const createdMs = typeof story?.["created"] === "number" ? (story["created"] as number) : 0;
+  if (storyId.length === 0) {
+    throw new AxiError("the send did not return a story id", "APP_API_ERROR", [
+      "The message may still have been delivered - verify with `messages read` before retrying",
+    ]);
+  }
+  return { storyId, created: createdMs > 0 ? new Date(createdMs).toISOString() : "", messageId };
 }

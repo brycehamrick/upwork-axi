@@ -46,15 +46,17 @@ Notes:
 
 ## REST (rooms / messages)
 
-Base: same-origin `GET` on `www.upwork.com` with the rooms token.
+Base: same-origin `GET`/`POST` on `www.upwork.com` with the rooms token.
 
 | Command | Path | Notes |
 | --- | --- | --- |
 | `messages rooms` | `/api/v3/rooms/rooms/simplified?limit=&callerOrgId=` | `{rooms: [...]}` — roomId, roomName, topic, numUnread, recentTimestamp, jobUid, context (jobTitle, clientName) |
 | `messages read` | `/api/v3/rooms/rooms/<roomId>/stories/simplified?limit=&callerOrgId=` | `{stories, cursor, total}` — storyId, message, created (ms), orgId, isSystemStory, actionType (`eo:post`) |
-| (room users) | `/api/v3/rooms/rooms/<roomId>/users?limit=&callerOrgId=` | `{users: [{userId, orgId, role}]}` — client user = orgId match |
+| `messages send` | `POST /api/v3/rooms/rooms/<roomId>/stories?callerOrgId=` | body verbatim from run `discover-20261009-083451-70c1` (exchange 114): `{messageId: "<userId>-<epochMs>-<rand4>", roomId, userId, deleted: false, markedAsAbusive: 0, message, sourceClient: "thunder-web", actionType: "eo:post", orgId, notes: {}, objectReferences: [{objectType: "eo:message", metadata: {}}], isLocked: false}` — response is the created story (`storyId`, `created`, ...) |
+| (room users) | `/api/v3/rooms/rooms/<roomId>/users?limit=&callerOrgId=` | `{users: [{userId, orgId, role}]}` — client user = orgId match (source of the send's `userId`) |
 | `messages unread` | via `rooms/simplified` `numUnread` | per-job variant: `/api/v3/rooms/users/jobs/<jobPostingId>/unreadCountsPerApplicant` |
 | (mark read) | `PUT /api/v3/rooms/rooms/<roomId>/users/<uid>/<orgId>?updateLastReadReason=roomOpened` | fires when a room is opened |
+| (draft autosave) | `POST /api/v3/rooms/drafts` | composer autosave; cosmetic, not required for the send |
 
 Story roles: `isSystemStory=1` → system; `orgId === <my org>` → out
 (team-wide); else in.
@@ -74,13 +76,11 @@ marketing (`away`).
 
 ## Not yet captured
 
-- **Message send** — the composer (rooms app or the applicants-page
-  `modal-messages` compose dialog) posts only on an actual send. Next
-  discovery: with the user's approval, send one test message to capture
-  the mutation, then build `messages send --confirm`.
 - Proposal shortlist/archive/decline mutations.
 - Offers (`CreateOfferInput` exists in the public API; the web flow was
-  not exercised in this run).
+  not exercised).
+- Message deletion (stories carry a `deleted` flag and the app supports
+  deleting your own messages; not exercised).
 
 ## Bot-detection surfaces to avoid
 

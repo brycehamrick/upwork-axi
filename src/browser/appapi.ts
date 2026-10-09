@@ -105,6 +105,16 @@ export interface AppApi {
     params?: Record<string, string | number>,
     opts?: { surface?: string | (() => string) },
   ): Promise<unknown>;
+  /**
+   * Same-origin REST POST with a JSON body (the rooms write surface).
+   * Same token scoping as `get`.
+   */
+  post(
+    path: string,
+    body: Record<string, unknown>,
+    params?: Record<string, string | number>,
+    opts?: { surface?: string | (() => string) },
+  ): Promise<unknown>;
   /** The client organization id observed from live app traffic. */
   orgId(): string;
 }
@@ -131,6 +141,20 @@ async function inPageGet(req: {
     method: "GET",
     credentials: "include",
     headers: req.headers,
+  });
+  return { status: response.status, text: await response.text() };
+}
+
+async function inPagePost(req: {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}): Promise<{ status: number; text: string }> {
+  const response = await fetch(req.url, {
+    method: "POST",
+    credentials: "include",
+    headers: req.headers,
+    body: req.body,
   });
   return { status: response.status, text: await response.text() };
 }
@@ -426,6 +450,58 @@ function makeApi(
         );
       }
       if (response.status !== 200) {
+        throw new AxiError(
+          `REST HTTP ${response.status} on ${path}: ${snippet(response.text)}`,
+          "APP_API_ERROR",
+          ["Retry; if it persists, the internal API shape may have changed (re-run discover)"],
+        );
+      }
+      try {
+        return JSON.parse(response.text) as unknown;
+      } catch {
+        throw new AxiError(`REST returned non-JSON on ${path}: ${snippet(response.text)}`, "APP_API_ERROR");
+      }
+    },
+    async post(path, body, params, opts = {}) {
+      const key = restPrefixKey(path);
+      let headers = captured.rest.get(key);
+      if (headers === undefined) {
+        const surface = surfaceUrl(opts.surface);
+        if (surface !== undefined) {
+          await recapture(surface, { restPrefix: key });
+          headers = captured.rest.get(key);
+        }
+        if (headers === undefined) {
+          throw new AxiError(
+            `no captured token for REST prefix ${key}`,
+            "APP_API_ERROR",
+            [`Captured prefixes: ${[...captured.rest.keys()].join(", ") || "(none)"}`],
+          );
+        }
+      }
+      const query = params
+        ? `?${new URLSearchParams(
+            Object.entries(params).map(([k, v]) => [k, String(v)] as [string, string]),
+          ).toString()}`
+        : "";
+      const response = await run(() =>
+        page.evaluate<{ status: number; text: string }, { url: string; headers: Record<string, string>; body: string }>(
+          inPagePost,
+          {
+            url: `${path}${query}`,
+            headers: { ...headers, "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        ),
+      );
+      if (response.status === 401 || response.status === 403) {
+        throw new AxiError(
+          `Upwork rejected the session (HTTP ${response.status} on ${path})`,
+          "AUTH_ERROR",
+          ["Run `upwork-axi auth login` to refresh the browser session"],
+        );
+      }
+      if (response.status !== 200 && response.status !== 201) {
         throw new AxiError(
           `REST HTTP ${response.status} on ${path}: ${snippet(response.text)}`,
           "APP_API_ERROR",

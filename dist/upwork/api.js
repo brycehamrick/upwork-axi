@@ -1,7 +1,7 @@
 import { AxiError } from "axi-sdk-js";
 import { MESSAGES_SURFACE_URL } from "../browser/appapi.js";
 import { CLIENT_DASHBOARD_RELATIONS, CLIENT_PROPOSALS_BY_FILTER, PROPOSALS_STATISTICS, } from "./queries.js";
-import { jobRowsFromRelations, packetFromListNode, proposalRowsFromFilter, statsFromStatistics, roomRowsFromSimplified, storiesFromSimplified, } from "./model.js";
+import { jobRowsFromRelations, meFromRoomUsers, buildMessageId, packetFromListNode, proposalRowsFromFilter, statsFromStatistics, roomRowsFromSimplified, storiesFromSimplified, } from "./model.js";
 /**
  * Operation wrappers over the in-page transports. One live resolution per
  * command invocation; paced (~300 ms) when fetching per-proposal detail.
@@ -153,4 +153,44 @@ export async function resolveRoom(api, raw) {
         ]);
     }
     return matches[0];
+}
+/**
+ * Send one message to a room (the write the app itself performs:
+ * POST /api/v3/rooms/rooms/<roomId>/stories with a client-generated
+ * messageId; extracted verbatim from discovery run
+ * discover-20261009-083451-70c1). One send per invocation - never bulk.
+ */
+export async function sendRoomMessage(api, roomId, text, opts = {}) {
+    const orgId = api.orgId();
+    const usersPayload = await api.get(`/api/v3/rooms/rooms/${roomId}/users`, { limit: 100, callerOrgId: orgId }, { surface: MESSAGES_SURFACE_URL });
+    const me = meFromRoomUsers(usersPayload, orgId);
+    if (me === undefined) {
+        throw new AxiError(`could not identify the client user in room ${roomId}`, "APP_API_ERROR", [
+            "Retry; if it persists, re-run `upwork-axi auth login` to refresh the session",
+        ]);
+    }
+    const now = opts.now ?? Date.now;
+    const messageId = buildMessageId(me, now(), 1000 + Math.floor(Math.random() * 9000));
+    const story = asRaw(await api.post(`/api/v3/rooms/rooms/${roomId}/stories`, {
+        messageId,
+        roomId,
+        userId: me,
+        deleted: false,
+        markedAsAbusive: 0,
+        message: text,
+        sourceClient: "thunder-web",
+        actionType: "eo:post",
+        orgId,
+        notes: {},
+        objectReferences: [{ objectType: "eo:message", metadata: {} }],
+        isLocked: false,
+    }, { callerOrgId: orgId }, { surface: MESSAGES_SURFACE_URL }));
+    const storyId = typeof story?.["storyId"] === "string" ? story["storyId"] : "";
+    const createdMs = typeof story?.["created"] === "number" ? story["created"] : 0;
+    if (storyId.length === 0) {
+        throw new AxiError("the send did not return a story id", "APP_API_ERROR", [
+            "The message may still have been delivered - verify with `messages read` before retrying",
+        ]);
+    }
+    return { storyId, created: createdMs > 0 ? new Date(createdMs).toISOString() : "", messageId };
 }

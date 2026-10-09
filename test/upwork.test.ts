@@ -8,6 +8,8 @@ import {
 } from "../src/browser/appapi.js";
 import {
   jobRowsFromRelations,
+  meFromRoomUsers,
+  buildMessageId,
   proposalRowsFromFilter,
   packetFromListNode,
   statsFromStatistics,
@@ -229,6 +231,22 @@ describe("model: stats, rooms, stories", () => {
   });
 });
 
+describe("model: send helpers", () => {
+  it("finds the client user by org", () => {
+    expect(
+      meFromRoomUsers(
+        { users: [{ userId: "1607693681280081920", orgId: "1607693681280081921", role: "admin" }, { userId: ME, orgId: ORG }] },
+        ORG,
+      ),
+    ).toBe(ME);
+    expect(meFromRoomUsers({ users: [] }, ORG)).toBeUndefined();
+  });
+
+  it("builds app-shaped message ids", () => {
+    expect(buildMessageId(ME, 1791556526860, 6681)).toBe(`${ME}-1791556526860-6681`);
+  });
+});
+
 describe("appapi round-trip (fake page)", () => {
   it("runs gql with the captured alias token and parses data", async () => {
     const api = appApiForTest(
@@ -272,5 +290,46 @@ describe("appapi round-trip (fake page)", () => {
       rooms: Array<{ roomId: string }>;
     };
     expect(payload.rooms[0]?.roomId).toBe("room_1");
+  });
+
+  it("posts stories with the app's exact body shape", async () => {
+    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const api = appApiForTest(
+      pageWithRoutes([
+        {
+          match: (url) => url.startsWith("/api/v3/rooms/rooms/room_1/users"),
+          body: () => ({ users: [{ userId: ME, orgId: ORG, role: "admin" }] }),
+        },
+        {
+          match: (url) => url.includes("/stories?"),
+          body: () => ({ storyId: "story_9", roomId: "room_1", created: 1791556527157 }),
+        },
+      ]),
+    );
+    const originalFetch = api.post.bind(api);
+    (api as { post: unknown }).post = async (
+      path: string,
+      body: Record<string, unknown>,
+      params?: Record<string, string | number>,
+    ) => {
+      posts.push({ url: `${path}?${new URLSearchParams(Object.entries(params ?? {}).map(([k, v]) => [k, String(v)])).toString()}`, body });
+      return originalFetch(path, body, params);
+    };
+    const { sendRoomMessage } = await import("../src/upwork/api.js");
+    const sent = await sendRoomMessage(api, "room_1", "hello there");
+    expect(sent.storyId).toBe("story_9");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.url).toContain("/api/v3/rooms/rooms/room_1/stories?callerOrgId=");
+    expect(posts[0]?.body).toMatchObject({
+      roomId: "room_1",
+      userId: ME,
+      message: "hello there",
+      sourceClient: "thunder-web",
+      actionType: "eo:post",
+      orgId: ORG,
+      deleted: false,
+      isLocked: false,
+    });
+    expect(String(posts[0]?.body.messageId)).toMatch(new RegExp(`^${ME}-\\d{13}-\\d{4}$`));
   });
 });

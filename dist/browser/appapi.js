@@ -94,6 +94,15 @@ async function inPageGet(req) {
     });
     return { status: response.status, text: await response.text() };
 }
+async function inPagePost(req) {
+    const response = await fetch(req.url, {
+        method: "POST",
+        credentials: "include",
+        headers: req.headers,
+        body: req.body,
+    });
+    return { status: response.status, text: await response.text() };
+}
 function safePostData(request) {
     try {
         return request.postData?.() ?? null;
@@ -306,6 +315,40 @@ function makeApi(page, context, captured, recapture) {
                 throw new AxiError(`Upwork rejected the session (HTTP ${response.status} on ${path})`, "AUTH_ERROR", ["Run `upwork-axi auth login` to refresh the browser session"]);
             }
             if (response.status !== 200) {
+                throw new AxiError(`REST HTTP ${response.status} on ${path}: ${snippet(response.text)}`, "APP_API_ERROR", ["Retry; if it persists, the internal API shape may have changed (re-run discover)"]);
+            }
+            try {
+                return JSON.parse(response.text);
+            }
+            catch {
+                throw new AxiError(`REST returned non-JSON on ${path}: ${snippet(response.text)}`, "APP_API_ERROR");
+            }
+        },
+        async post(path, body, params, opts = {}) {
+            const key = restPrefixKey(path);
+            let headers = captured.rest.get(key);
+            if (headers === undefined) {
+                const surface = surfaceUrl(opts.surface);
+                if (surface !== undefined) {
+                    await recapture(surface, { restPrefix: key });
+                    headers = captured.rest.get(key);
+                }
+                if (headers === undefined) {
+                    throw new AxiError(`no captured token for REST prefix ${key}`, "APP_API_ERROR", [`Captured prefixes: ${[...captured.rest.keys()].join(", ") || "(none)"}`]);
+                }
+            }
+            const query = params
+                ? `?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString()}`
+                : "";
+            const response = await run(() => page.evaluate(inPagePost, {
+                url: `${path}${query}`,
+                headers: { ...headers, "content-type": "application/json" },
+                body: JSON.stringify(body),
+            }));
+            if (response.status === 401 || response.status === 403) {
+                throw new AxiError(`Upwork rejected the session (HTTP ${response.status} on ${path})`, "AUTH_ERROR", ["Run `upwork-axi auth login` to refresh the browser session"]);
+            }
+            if (response.status !== 200 && response.status !== 201) {
                 throw new AxiError(`REST HTTP ${response.status} on ${path}: ${snippet(response.text)}`, "APP_API_ERROR", ["Retry; if it persists, the internal API shape may have changed (re-run discover)"]);
             }
             try {

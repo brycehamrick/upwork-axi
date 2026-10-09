@@ -8,6 +8,7 @@ import { homeCommand } from "../src/commands/home.js";
 import { authCommand } from "../src/commands/auth.js";
 import { browserCommand } from "../src/commands/browser.js";
 import { discoverCommand } from "../src/commands/discover.js";
+import { messagesCommand } from "../src/commands/messages.js";
 import { writeSessionRecord } from "../src/browser/session.js";
 import type { CommandContext } from "../src/context.js";
 
@@ -280,5 +281,106 @@ describe("discover", () => {
     await expect(
       discoverCommand(["--url", "https://example.com/"], ctx),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+});
+
+describe("messages send (gated write)", () => {
+  interface SendApi {
+    postCalls: Array<{ path: string }>;
+  }
+
+  function makeSendCtx(roomName = "Ghaith"): { ctx: CommandContext; api: SendApi } {
+    const api: SendApi & {
+      get(path: string): Promise<unknown>;
+      post(path: string, body: Record<string, unknown>): Promise<unknown>;
+    } & Record<string, unknown> = {
+      postCalls: [],
+      orgId: () => "678320150802239488",
+      get: async (path: string) => {
+        if (path.startsWith("/api/v3/rooms/rooms/simplified")) {
+          return {
+            rooms: [{ roomId: "room_1", roomName, topic: "Job", numUnread: 0 }],
+          };
+        }
+        if (path.endsWith("/users")) {
+          return { users: [{ userId: "678320150166175744", orgId: "678320150802239488" }] };
+        }
+        if (path.endsWith("/stories/simplified")) {
+          return api.postCalls.length > 0
+            ? {
+                stories: [
+                  {
+                    storyId: "story_new",
+                    userId: "678320150166175744",
+                    orgId: "678320150802239488",
+                    created: 1791556527157,
+                    message: "",
+                    isSystemStory: 0,
+                  },
+                ],
+                cursor: "",
+                total: 1,
+              }
+            : { stories: [], cursor: "", total: 0 };
+        }
+        return {};
+      },
+      post: async (path: string, _body: Record<string, unknown>) => {
+        api.postCalls.push({ path });
+        return { storyId: "story_new", roomId: "room_1", created: 1791556527157 };
+      },
+    };
+    const stateDir = mkdtempSync(join(tmpdir(), "upwork-axi-send-test-"));
+    const ctx = {
+      config: { stateDir },
+      stateDir,
+      env: {},
+      browser: {
+        login: async () => ({ url: "https://www.upwork.com/", started: true }),
+        probe: async () => ({ state: "logged-in", url: "https://www.upwork.com/", started: false }),
+        discover: async () => ({ runDir: "", runId: "", url: "", exchanges: [], documentCount: 0, consoleErrors: [], files: [] }),
+      },
+      daemon: {
+        ensure: async () => ({ port: 1, pid: 1, startedAt: "", started: true }),
+        withPage: async <T>(fn: (conn: object) => Promise<T>) => fn({}),
+        probe: async () => ({ running: false }),
+        stop: async () => "not-running" as const,
+      },
+      app: async <T>(fn: (transport: unknown) => Promise<T>) => fn(api),
+    } as unknown as CommandContext;
+    return { ctx, api };
+  }
+
+  it("previews without --confirm and makes zero mutation calls", async () => {
+    const { ctx, api } = makeSendCtx();
+    const result = (await messagesCommand(["send", "Ghaith", "--text", "hi"], ctx)) as {
+      message: string;
+      help: string[];
+    };
+    expect(result.message).toBe("hi");
+    expect(result.help.join(" ")).toContain("zero messages were sent");
+    expect(api.postCalls).toHaveLength(0);
+  });
+
+  it("requires --text", async () => {
+    const { ctx } = makeSendCtx();
+    await expect(messagesCommand(["send", "Ghaith"], ctx)).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+    });
+  });
+
+  it("sends once with --confirm and verifies by re-read", async () => {
+    const { ctx, api } = makeSendCtx();
+    // make the re-read see the new story
+    const originalGet = api.postCalls;
+    expect(originalGet).toHaveLength(0);
+    const result = (await messagesCommand(
+      ["send", "Ghaith", "--text", "hello", "--confirm"],
+      ctx,
+    )) as { sent: { verified: boolean; story: string } };
+    expect(api.postCalls).toHaveLength(1);
+    expect(api.postCalls[0]?.path).toContain("/stories");
+    expect(result.sent.story).toBe("story_new");
+    expect(result.sent.verified).toBe(true);
   });
 });

@@ -56,6 +56,7 @@ browser stays open after login so commands work immediately.
 | `upwork-axi messages rooms` | Message rooms (`--unread`, `--limit`) |
 | `upwork-axi messages read <room>` | One thread, out/in roles (`--full`, `--limit`) |
 | `upwork-axi messages unread` | Unread rooms and counts |
+| `upwork-axi messages send <room> --text <t>` | Gated single message send: preview by default, `--confirm` sends + verifies |
 | `upwork-axi auth login` | Open visible Chrome, wait for manual login |
 | `upwork-axi auth status` | Session state (`--browser` probes live) |
 | `upwork-axi auth logout` | Close the browser, clear the record (`--purge` deletes the profile) |
@@ -179,13 +180,13 @@ domain-command roadmap (`jobs`, `proposals`, `messages`).
 
 - **Phase 0** - scaffold, persistent browser daemon, auth, interactive
   `browser` family, `discover`, skill, hooks.
-- **Phase 1 (this release)** - domain reads replaying the web app's own
-  scoped tokens: `jobs list`, `proposals list/stats`, `proposal get`,
+- **Phase 1** - domain reads replaying the web app's own scoped tokens:
+  `jobs list`, `proposals list/stats`, `proposal get`,
   `messages rooms/read/unread`. Endpoint map:
   `docs/discovery-2026-10-08.md`.
-- **Phase 2** - gated writes: `messages send --confirm` (verified by
-  thread re-read; needs one user-approved test send to capture the
-  mutation), proposal shortlist/archive/decline.
+- **Phase 2 (this release)** - gated writes: `messages send --confirm`
+  (body extracted verbatim from a live send; verified by thread re-read).
+  Next: proposal shortlist/archive/decline.
 - **API transport** - the official Upwork GraphQL API (OAuth 2.0) becomes
   the primary transport once API access is approved; the browser family
   stays as fallback for API gaps.

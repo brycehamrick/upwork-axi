@@ -172,6 +172,22 @@ export function unreadCountsFromApplicants(payload) {
 export function formatTimestamp(ms) {
     return ms > 0 ? new Date(ms).toISOString() : "";
 }
+/** The client-side user of a room from GET /api/v3/rooms/rooms/<id>/users. */
+export function meFromRoomUsers(payload, orgId) {
+    const users = Array.isArray(asRaw(payload)?.["users"])
+        ? asRaw(payload)["users"]
+        : [];
+    for (const user of users) {
+        const entry = asRaw(user);
+        if (entry && strOf(entry["orgId"]) === orgId)
+            return strOf(entry["userId"]);
+    }
+    return undefined;
+}
+/** The client-generated messageId for a story send: <userId>-<epoch>-<rand4>. */
+export function buildMessageId(userId, nowMs, rand) {
+    return `${userId}-${nowMs}-${rand}`;
+}
 /** Full packet from a clientProposalsByFilter list node (cover letter et al). */
 export function packetFromListNode(node, job) {
     const user = asRaw(node["user"]) ?? {};

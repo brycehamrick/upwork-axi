@@ -30,6 +30,7 @@ upwork-axi proposal get <id> [--full] [--job r]     # cover letter, Q&A, milesto
 upwork-axi messages rooms [--unread]                # message rooms
 upwork-axi messages read <room> [--full] [--limit]  # thread, out/in roles
 upwork-axi messages unread                          # unread rooms + counts
+upwork-axi messages send <room> --text "<draft>"    # preview; --confirm sends + verifies
 ```
 
 - `--job <ref>`: opening id from `jobs list` or a unique title prefix.
@@ -55,9 +56,10 @@ upwork-axi messages unread                          # unread rooms + counts
 4. `upwork-axi messages read <room>` for prior contact (rows without a
    `room` have never been messaged).
 5. Draft the next touchpoint from the process docs and show the user the
-   exact text. **Sending is gated**: until the Phase 2 `messages send
-   --confirm` command lands, sends happen in the visible browser via the
-   interactive loop below - narrate before acting, never bulk.
+   exact text, then send through the gate:
+   `messages send <room> --text "<draft>"` → user approves → rerun with
+   `--confirm`. The send is verified by an independent thread re-read.
+   One send per invocation - never bulk.
 
 ## Interactive browser (fallback for anything without a command)
 
@@ -70,6 +72,16 @@ upwork-axi messages unread                          # unread rooms + counts
    (`STALE_REF`). `(offscreen)` elements have no ref: scroll
    (`eval window.scrollBy(0, 800)`), re-snapshot.
 4. Diagnostics: `browser console`, `browser screenshot`, `browser eval`.
+
+## Writes (gated - the human approves every candidate-facing action)
+
+- Without `--confirm` the command resolves the room live, prints the exact
+  preview (recipient, topic, message body), and makes zero mutation
+  calls. Always show this preview to the user and get approval before
+  rerunning with `--confirm`.
+- `messages send <room> --text "..."` - one message per invocation,
+  verified by an independent thread re-read after sending.
+- Never bulk-send. Pace everything; the browser is visible.
 
 ## Safety
 
@@ -117,8 +129,8 @@ usage/validation, 1 runtime. Errors carry `error`/`code`/`help[]`.
 
 ## Roadmap context
 
-Phase 0 (transport) and Phase 1 reads (jobs, proposals, messages) are
-complete. Phase 2 adds the gated `messages send --confirm` (needs one
-user-approved test send to capture the mutation) and proposal
-shortlist/archive. An official OAuth API transport becomes primary once
-Upwork approves API access; the browser layer stays as fallback.
+Phase 0 (transport), Phase 1 reads (jobs, proposals, messages), and the
+Phase 2 gated `messages send --confirm` are complete. Next: proposal
+shortlist/archive/decline. An official OAuth API transport becomes
+primary once Upwork approves API access; the browser layer stays as
+fallback.

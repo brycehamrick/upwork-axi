@@ -22,7 +22,7 @@ commands:
   proposals list|stats   applicant rows / pipeline counts for a job
   proposal get <id>      one proposal packet (cover letter, terms)
   messages rooms|read    message rooms / one thread with out-in roles
-  messages unread        unread rooms and counts
+  messages send|unread   gated single message send / unread rooms and counts
   skill install          install the agent skill (npx-able, idempotent)
   auth login             open a visible Chrome window, wait for manual login
   auth status            browser session state (--browser to probe live)
@@ -37,8 +37,9 @@ manual through the persistent profile (2FA included). Browser state lives
 in ~/.upwork-axi/ (override with UPWORK_STATE_DIR). Navigation is scoped
 to *.upwork.com; one headed browser at a time.
 
-roadmap: domain commands (jobs list, proposals list/sync, messages
-read/send) are built from discovery artifacts once the session is live.
+Domain commands (jobs, proposals, messages read/send) run over the same
+session, replaying the web app's own per-surface scoped tokens from
+in-page fetches. Sends are gated: preview by default, --confirm to send.
 The official GraphQL API transport ships separately when API access is
 approved.
 

@@ -67,27 +67,65 @@ const LINUX_CHROME_PATHS = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
 ];
-export function resolveChromeExecutable(env = process.env) {
+/**
+ * Which Chromium-family browser the daemon launches (UPWORK_BROWSER):
+ *
+ * - `chrome` (default): the installed Google Chrome, then any
+ *   Playwright-installed chromium as fallback. Shares the Chrome.app bundle
+ *   with the user's daily browser on macOS (one Dock icon, merged app
+ *   switcher) even though the profile dir is dedicated.
+ * - `chromium`: the Playwright-installed build only. On macOS it ships as
+ *   its own "Google Chrome for Testing.app" - the real Chrome engine in a
+ *   separate app bundle, so it never interferes with the user's primary
+ *   Chrome sessions. Missing install fails loud rather than falling back.
+ *
+ * `UPWORK_BROWSER_BIN` always wins over this choice.
+ */
+export function resolveBrowserChoice(env = process.env) {
+    const value = env["UPWORK_BROWSER"]?.trim().toLowerCase();
+    if (!value || value === "chrome")
+        return "chrome";
+    if (value === "chromium")
+        return "chromium";
+    throw new AxiError(`unknown UPWORK_BROWSER value "${value}" (expected "chrome" or "chromium")`, "VALIDATION_ERROR", [
+        "Set UPWORK_BROWSER=chromium to use the Playwright-installed browser (isolated from your daily Chrome), or unset it to use installed Google Chrome",
+    ]);
+}
+/** Playwright-installed chromium executable, when actually on disk. */
+export const defaultBundledPath = () => {
+    try {
+        const bundled = chromium.executablePath();
+        return bundled && existsSync(bundled) ? bundled : null;
+    }
+    catch {
+        return null; // not installed
+    }
+};
+export function resolveChromeExecutable(env = process.env, bundledPath = defaultBundledPath) {
     const explicit = env["UPWORK_BROWSER_BIN"]?.trim();
     if (explicit && explicit.length > 0)
         return explicit;
+    const choice = resolveBrowserChoice(env);
+    const bundled = bundledPath();
+    if (choice === "chromium") {
+        if (bundled)
+            return bundled;
+        throw new AxiError("UPWORK_BROWSER=chromium but no Playwright-installed chromium was found", "LAUNCH_ERROR", [
+            "Run `npx playwright-core install chromium` to install it, or",
+            "Set UPWORK_BROWSER_BIN to a Chrome/Chromium binary path, or",
+            "Unset UPWORK_BROWSER to fall back to installed Google Chrome",
+        ]);
+    }
     for (const candidate of [...MAC_CHROME_PATHS, ...LINUX_CHROME_PATHS]) {
         if (existsSync(candidate))
             return candidate;
     }
-    // Playwright-installed bundled chromium, when present.
-    try {
-        const bundled = chromium.executablePath();
-        if (bundled && existsSync(bundled))
-            return bundled;
-    }
-    catch {
-        // not installed - fall through to the error
-    }
+    if (bundled)
+        return bundled;
     throw new AxiError("no usable Chrome/Chromium found for the browser transport", "LAUNCH_ERROR", [
         "Install Google Chrome, or",
-        "Set UPWORK_BROWSER_BIN to a Chrome/Chromium binary path, or",
-        "Run `npx playwright@latest install chromium` for a bundled browser",
+        "Set UPWORK_BROWSER to chromium and run `npx playwright-core install chromium`, or",
+        "Set UPWORK_BROWSER_BIN to a Chrome/Chromium binary path",
     ]);
 }
 export const defaultFreePort = () => new Promise((resolve, reject) => {

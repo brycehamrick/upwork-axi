@@ -26,9 +26,12 @@ npx -y upwork-axi@latest jobs list
 npx -y upwork-axi skill install
 ```
 
-Requires Node 20+ and a Chrome/Chromium (`UPWORK_BROWSER_BIN` can point to a
-specific binary; installed Google Chrome is auto-detected, then any
-Playwright-installed chromium).
+Requires Node 20+ and a Chrome/Chromium. Set `UPWORK_BROWSER=chromium` to run
+the Playwright-installed browser (on macOS its own "Google Chrome for
+Testing.app", fully isolated from your daily Chrome; install it with
+`npx playwright-core install chromium`). The default is installed Google
+Chrome, then any Playwright-installed chromium; `UPWORK_BROWSER_BIN` can point
+at a specific binary and always wins.
 
 ## Auth
 
@@ -201,7 +204,9 @@ upwork-axi auth login                # visible Chrome; log in manually (2FA incl
 
 The skill installer is idempotent (`--force` overwrites a changed version,
 `--dir <path>` targets another skills directory). Optional env:
-`UPWORK_STATE_DIR` (default `~/.upwork-axi`) and `UPWORK_BROWSER_BIN`.
+`UPWORK_STATE_DIR` (default `~/.upwork-axi`), `UPWORK_BROWSER` (`chrome`
+default, or `chromium` for the Playwright-installed build), and
+`UPWORK_BROWSER_BIN` (explicit binary path; always wins).
 
 ## Development
 

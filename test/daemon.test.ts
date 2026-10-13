@@ -8,6 +8,8 @@ import {
   connectDaemon,
   ensureDaemon,
   readDaemonState,
+  resolveBrowserChoice,
+  resolveChromeExecutable,
   startDaemonBrowser,
   stopDaemonBrowser,
   writeDaemonState,
@@ -148,6 +150,50 @@ describe("ensureDaemon", () => {
     const result = await ensureDaemon(dir, deps);
     expect(result.started).toBe(true);
     expect(result.pid).toBe(4242);
+  });
+});
+
+describe("resolveBrowserChoice", () => {
+  it("defaults to chrome and normalizes case/whitespace", () => {
+    expect(resolveBrowserChoice({})).toBe("chrome");
+    expect(resolveBrowserChoice({ UPWORK_BROWSER: "  CHROME " })).toBe("chrome");
+    expect(resolveBrowserChoice({ UPWORK_BROWSER: " Chromium " })).toBe("chromium");
+  });
+
+  it("rejects unknown values as VALIDATION_ERROR", () => {
+    expect(() => resolveBrowserChoice({ UPWORK_BROWSER: "firefox" })).toThrowError(AxiError);
+    expect(() => resolveBrowserChoice({ UPWORK_BROWSER: "firefox" })).toThrowError(
+      /unknown UPWORK_BROWSER value "firefox"/,
+    );
+  });
+});
+
+describe("resolveChromeExecutable", () => {
+  const bundled = () => "/cache/ms-playwright/chromium-1248/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+
+  it("UPWORK_BROWSER_BIN always wins", () => {
+    expect(
+      resolveChromeExecutable({ UPWORK_BROWSER_BIN: "/custom/chrome", UPWORK_BROWSER: "chromium" }, bundled),
+    ).toBe("/custom/chrome");
+    expect(resolveChromeExecutable({ UPWORK_BROWSER_BIN: "/custom/chrome" }, () => null)).toBe(
+      "/custom/chrome",
+    );
+  });
+
+  it("UPWORK_BROWSER=chromium resolves the Playwright-installed build", () => {
+    expect(resolveChromeExecutable({ UPWORK_BROWSER: "chromium" }, bundled)).toBe(bundled());
+  });
+
+  it("UPWORK_BROWSER=chromium fails loud when no bundled build exists", () => {
+    expect(() => resolveChromeExecutable({ UPWORK_BROWSER: "chromium" }, () => null)).toThrowError(
+      AxiError,
+    );
+    try {
+      resolveChromeExecutable({ UPWORK_BROWSER: "chromium" }, () => null);
+      expect.unreachable("must throw");
+    } catch (error) {
+      expect((error as AxiError).code).toBe("LAUNCH_ERROR");
+    }
   });
 });
 

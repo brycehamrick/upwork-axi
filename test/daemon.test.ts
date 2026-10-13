@@ -154,8 +154,9 @@ describe("ensureDaemon", () => {
 });
 
 describe("resolveBrowserChoice", () => {
-  it("defaults to chrome and normalizes case/whitespace", () => {
-    expect(resolveBrowserChoice({})).toBe("chrome");
+  it("defaults to auto and normalizes case/whitespace", () => {
+    expect(resolveBrowserChoice({})).toBe("auto");
+    expect(resolveBrowserChoice({ UPWORK_BROWSER: " AUTO " })).toBe("auto");
     expect(resolveBrowserChoice({ UPWORK_BROWSER: "  CHROME " })).toBe("chrome");
     expect(resolveBrowserChoice({ UPWORK_BROWSER: " Chromium " })).toBe("chromium");
   });
@@ -170,26 +171,69 @@ describe("resolveBrowserChoice", () => {
 
 describe("resolveChromeExecutable", () => {
   const bundled = () => "/cache/ms-playwright/chromium-1248/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+  const system = () => "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
   it("UPWORK_BROWSER_BIN always wins", () => {
     expect(
-      resolveChromeExecutable({ UPWORK_BROWSER_BIN: "/custom/chrome", UPWORK_BROWSER: "chromium" }, bundled),
+      resolveChromeExecutable(
+        { UPWORK_BROWSER_BIN: "/custom/chrome", UPWORK_BROWSER: "chromium" },
+        { bundledPath: bundled, systemChromePath: system },
+      ),
     ).toBe("/custom/chrome");
-    expect(resolveChromeExecutable({ UPWORK_BROWSER_BIN: "/custom/chrome" }, () => null)).toBe(
-      "/custom/chrome",
+    expect(
+      resolveChromeExecutable({ UPWORK_BROWSER_BIN: "/custom/chrome" }, { bundledPath: () => null }),
+    ).toBe("/custom/chrome");
+  });
+
+  it("auto prefers the isolated bundled build over system Chrome", () => {
+    expect(resolveChromeExecutable({}, { bundledPath: bundled, systemChromePath: system })).toBe(
+      bundled(),
     );
   });
 
-  it("UPWORK_BROWSER=chromium resolves the Playwright-installed build", () => {
-    expect(resolveChromeExecutable({ UPWORK_BROWSER: "chromium" }, bundled)).toBe(bundled());
+  it("auto falls back to system Chrome when no bundled build exists", () => {
+    expect(resolveChromeExecutable({}, { bundledPath: () => null, systemChromePath: system })).toBe(
+      system(),
+    );
+  });
+
+  it("auto fails loud when neither browser exists", () => {
+    try {
+      resolveChromeExecutable({}, { bundledPath: () => null, systemChromePath: () => null });
+      expect.unreachable("must throw");
+    } catch (error) {
+      expect((error as AxiError).code).toBe("LAUNCH_ERROR");
+    }
+  });
+
+  it("UPWORK_BROWSER=chromium resolves the Playwright-installed build only", () => {
+    expect(
+      resolveChromeExecutable({ UPWORK_BROWSER: "chromium" }, { bundledPath: bundled, systemChromePath: system }),
+    ).toBe(bundled());
   });
 
   it("UPWORK_BROWSER=chromium fails loud when no bundled build exists", () => {
-    expect(() => resolveChromeExecutable({ UPWORK_BROWSER: "chromium" }, () => null)).toThrowError(
-      AxiError,
-    );
     try {
-      resolveChromeExecutable({ UPWORK_BROWSER: "chromium" }, () => null);
+      resolveChromeExecutable(
+        { UPWORK_BROWSER: "chromium" },
+        { bundledPath: () => null, systemChromePath: system },
+      );
+      expect.unreachable("must throw");
+    } catch (error) {
+      expect((error as AxiError).code).toBe("LAUNCH_ERROR");
+      expect((error as AxiError).suggestions).toContain("Run `npx playwright-core install chromium` to install it, or");
+    }
+  });
+
+  it("UPWORK_BROWSER=chrome resolves system Chrome only", () => {
+    expect(
+      resolveChromeExecutable({ UPWORK_BROWSER: "chrome" }, { bundledPath: bundled, systemChromePath: system }),
+    ).toBe(system());
+    try {
+      resolveChromeExecutable(
+        { UPWORK_BROWSER: "chrome" },
+        { bundledPath: bundled, systemChromePath: () => null },
+      );
       expect.unreachable("must throw");
     } catch (error) {
       expect((error as AxiError).code).toBe("LAUNCH_ERROR");

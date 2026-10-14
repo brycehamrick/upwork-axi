@@ -186,20 +186,34 @@ export interface WaitOptions {
  * Wait for manual login: poll the URL and DOM until a client-app
  * page is reached. Timeout raises TIMEOUT with guidance; the caller keeps
  * the browser open (the daemon owns its lifecycle).
+ *
+ * A logged-in classification must survive a settle re-check: Upwork's SPA
+ * can briefly show an app URL to a logged-out visitor before flipping to
+ * a login redirect, so the first hit alone cannot prove a session.
  */
 export async function waitForLogin(page: Page, opts: WaitOptions): Promise<string> {
   const pollMs = opts.pollMs ?? 500;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const deadline = Date.now() + opts.timeoutMs;
   let prompted = false;
+  const settledLoggedIn = async (): Promise<string | null> => {
+    const first = page.url();
+    if (classifyUrl(first) !== "logged-in") return null;
+    if (await looksLikeLoginPage(page)) return null;
+    await sleep(1500);
+    const settled = page.url();
+    if (classifyUrl(settled) !== "logged-in") return null;
+    if (await looksLikeLoginPage(page)) return null;
+    return settled;
+  };
   for (;;) {
-    const state = classifyUrl(page.url());
-    if (state === "logged-in" && !(await looksLikeLoginPage(page))) return page.url();
+    const settled = await settledLoggedIn();
+    if (settled) return settled;
     if (!prompted) {
       // give redirects a moment before declaring a login is needed
       await sleep(1500);
-      const retryState = classifyUrl(page.url());
-      if (retryState === "logged-in" && !(await looksLikeLoginPage(page))) return page.url();
+      const retry = await settledLoggedIn();
+      if (retry) return retry;
       prompted = true;
       opts.onPrompt?.();
     }

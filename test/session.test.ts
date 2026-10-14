@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AxiError } from "axi-sdk-js";
+import type { Page } from "playwright-core";
 import {
   acquireLock,
   classifyUrl,
@@ -14,6 +15,7 @@ import {
   readSessionRecord,
   releaseLock,
   resolveStateDir,
+  waitForLogin,
   writeSessionRecord,
 } from "../src/browser/session.js";
 import { createRunDir, sanitizeHtml } from "../src/browser/artifacts.js";
@@ -99,6 +101,42 @@ describe("classifyUrl", () => {
     expect(classifyUrl("https://www.google.com/")).toBe("away");
     expect(classifyUrl("https://evilupwork.com/login")).toBe("away");
     expect(classifyUrl("not a url")).toBe("away");
+  });
+});
+
+describe("waitForLogin", () => {
+  function fakeLoginPage(url: () => string): Page {
+    return {
+      url,
+      locator: () => ({ count: async () => 0 }),
+    } as unknown as Page;
+  }
+
+  it("returns a stable app URL after the settle re-check", async () => {
+    const page = fakeLoginPage(() => "https://www.upwork.com/nx/my-jobs");
+    const url = await waitForLogin(page, { timeoutMs: 5000, sleep: async () => undefined });
+    expect(url).toBe("https://www.upwork.com/nx/my-jobs");
+  });
+
+  it("does not mistake a transient app URL for a session", async () => {
+    let current = "https://www.upwork.com/nx/home";
+    let prompts = 0;
+    let slept = 0;
+    const page = fakeLoginPage(() => current);
+    const url = await waitForLogin(page, {
+      timeoutMs: 5000,
+      onPrompt: () => {
+        prompts++;
+      },
+      sleep: async () => {
+        slept++;
+        // first settle lands on the login redirect; login completes later
+        if (slept === 1) current = "https://www.upwork.com/ab/account-security/login";
+        if (slept === 4) current = "https://www.upwork.com/nx/home";
+      },
+    });
+    expect(url).toBe("https://www.upwork.com/nx/home");
+    expect(prompts).toBe(1);
   });
 });
 

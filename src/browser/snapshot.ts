@@ -29,6 +29,12 @@ export const DEFAULT_LINE_LIMIT = 400;
  */
 export const SNAPSHOT_SOURCE = `(() => {
   const MAX_LINE = 240;
+  if (!document.body) {
+    // Mid-navigation snapshot (body swapped out before the new document
+    // parsed): return an empty outline instead of throwing; the caller's
+    // next snapshot lands on the settled document.
+    return { url: location.href, title: document.title, lines: [], refs: 0 };
+  }
   document.querySelectorAll('[data-ua-ref]').forEach((el) => el.removeAttribute('data-ua-ref'));
   const visible = (el) => {
     const style = window.getComputedStyle(el);
